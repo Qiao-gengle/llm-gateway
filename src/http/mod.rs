@@ -82,13 +82,19 @@ pub fn with_admin(router: Router, state: admin::AdminState) -> Router {
 
 /// 组装 Router，并用 Request_ID 中间件包裹所有路由。
 pub fn build_router() -> Router {
-    build_router_with_admin(None)
+    build_router_with_admin(None, None)
 }
 
-/// 同 `build_router`，提供 `AdminState` 时挂入 Admin_API。
-pub fn build_router_with_admin(admin: Option<admin::AdminState>) -> Router {
+/// 同 `build_router`，提供 `AdminState` 时挂入 Admin_API，提供探测列表时挂入 `/readyz`。
+pub fn build_router_with_admin(
+    admin: Option<admin::AdminState>,
+    probes: Option<Vec<health::Probe>>,
+) -> Router {
     let gen_ = Arc::new(request_id::RequestIdGenerator::new());
-    let router = Router::new().merge(health::router());
+    let mut router = Router::new().merge(health::router());
+    if let Some(probes) = probes {
+        router = router.merge(health::ready_router(probes));
+    }
     let router = match admin {
         Some(state) => with_admin(router, state),
         None => router,

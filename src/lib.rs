@@ -36,7 +36,7 @@ pub async fn run() {
     logging::init();
 
     use secrecy::ExposeSecret;
-    let _pg = match db::connect_and_migrate(config.database_url.expose_secret()).await {
+    let pg = match db::connect_and_migrate(config.database_url.expose_secret()).await {
         Ok(p) => p,
         Err(e) => {
             eprintln!(
@@ -55,7 +55,14 @@ pub async fn run() {
         }
     };
     tracing::info!(addr = %config.listen_addr, "listening");
-    if let Err(e) = axum::serve(listener, http::build_router()).await {
+    let secrets = std::sync::Arc::new(secret::SecretStore::new(
+        config.master_key.expose_secret(),
+        std::sync::Arc::new(clock::OsRandom),
+    ));
+    let admin = http::admin::AdminState::new(&config.admin_token).with_db(pg.clone(), secrets);
+    let probes = vec![http::health::Probe::postgres(pg)];
+    let app = http::build_router_with_admin(Some(admin), Some(probes));
+    if let Err(e) = axum::serve(listener, app).await {
         tracing::error!(error = %e, "server error");
         std::process::exit(1);
     }

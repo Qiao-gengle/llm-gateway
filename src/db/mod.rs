@@ -1,5 +1,8 @@
 //! 数据库层。当前只包含错误类型；其余由后续任务实现。
 
+pub mod providers;
+pub mod routes;
+
 use std::fmt;
 
 use axum::http::StatusCode;
