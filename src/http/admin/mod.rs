@@ -1,5 +1,10 @@
 //! Admin_API：`/admin` 与 `/admin/*`，所有请求先经 `admin_auth`（需求 8）。
 
+pub mod providers;
+pub mod routes;
+
+use std::sync::Arc;
+
 use axum::Router;
 use axum::extract::{Request, State};
 use axum::http::{StatusCode, header};
@@ -11,6 +16,7 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 use crate::http::errors::AdminError;
+use crate::secret::SecretStore;
 
 /// Admin_Token 的 SHA-256 摘要；构造时一次性读取明文，之后只保留摘要。
 #[derive(Clone)]
@@ -34,14 +40,34 @@ impl std::fmt::Debug for AdminToken {
     }
 }
 
+/// 管理接口的数据库与加密依赖。
+#[derive(Clone)]
+pub struct AdminDb {
+    pub pool: sqlx::PgPool,
+    pub secrets: Arc<SecretStore>,
+}
+
+impl std::fmt::Debug for AdminDb {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdminDb").finish_non_exhaustive()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct AdminState {
     pub admin_token: AdminToken,
+    /// 为 `None` 时只挂鉴权与占位路由（不含 CRUD）。
+    pub db: Option<AdminDb>,
 }
 
 impl AdminState {
     pub fn new(admin_token: &SecretString) -> Self {
-        Self { admin_token: AdminToken::new(admin_token) }
+        Self { admin_token: AdminToken::new(admin_token), db: None }
+    }
+
+    pub fn with_db(mut self, pool: sqlx::PgPool, secrets: Arc<SecretStore>) -> Self {
+        self.db = Some(AdminDb { pool, secrets });
+        self
     }
 }
 
@@ -69,7 +95,11 @@ async fn not_found() -> Response {
 
 /// 挂在 `/admin`（含其本身）下的 Router；后续任务在 layer 之前添加具体路由。
 pub fn admin_router(state: AdminState) -> Router {
-    Router::new()
+    let mut router = Router::new();
+    if let Some(db) = state.db {
+        router = router.merge(providers::router(db.clone())).merge(routes::router(db));
+    }
+    router
         .route("/admin", any(not_found))
         .route("/admin/", any(not_found))
         .route("/admin/{*rest}", any(not_found))
