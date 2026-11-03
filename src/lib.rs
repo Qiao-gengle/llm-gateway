@@ -35,6 +35,18 @@ pub async fn run() {
     };
     logging::init();
 
+    use secrecy::ExposeSecret;
+    let _pg = match db::connect_and_migrate(config.database_url.expose_secret()).await {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!(
+                "DATABASE_URL: failed to connect or migrate ({}): {e}",
+                config::redact_url(config.database_url.expose_secret())
+            );
+            std::process::exit(1);
+        }
+    };
+
     let listener = match tokio::net::TcpListener::bind(config.listen_addr).await {
         Ok(l) => l,
         Err(e) => {

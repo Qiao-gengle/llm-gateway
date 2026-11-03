@@ -100,6 +100,21 @@ impl From<sqlx::Error> for DbError {
     }
 }
 
+/// 建立连接池并执行 `migrations/` 下的迁移。
+pub async fn connect_and_migrate(url: &str) -> Result<sqlx::PgPool, DbError> {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(10)
+        .acquire_timeout(std::time::Duration::from_secs(10))
+        .connect(url)
+        .await
+        .map_err(DbError::from)?;
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .map_err(|_| DbError::new(DbErrorKind::Migration))?;
+    Ok(pool)
+}
+
 /// 约束冲突映射：23505（唯一）与 23503（外键）→ 409，其他返回 `None`。
 pub fn conflict_status(sqlstate: &str) -> Option<StatusCode> {
     match sqlstate {
