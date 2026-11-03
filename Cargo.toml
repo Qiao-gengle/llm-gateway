@@ -14,7 +14,7 @@ path = "src/main.rs"
 [features]
 default = []
 # 暴露测试接缝（MockClock、SeededRandom、内存实现等）给 tests/ 下的集成测试
-testkit = []
+testkit = ["dep:rand_chacha"]
 
 [dependencies]
 axum = "0.8"
@@ -40,6 +40,7 @@ uuid = { version = "1", features = ["v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 dashmap = "6"
 rand = "0.8"
+rand_chacha = { version = "0.3", optional = true }
 base64 = "0.22"
 thiserror = "2"
 async-trait = "0.1"
