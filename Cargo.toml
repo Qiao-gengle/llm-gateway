@@ -1,0 +1,56 @@
+[package]
+name = "llm-gateway"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "llm_gateway"
+path = "src/lib.rs"
+
+[[bin]]
+name = "llm-gateway"
+path = "src/main.rs"
+
+[features]
+default = []
+# 暴露测试接缝（MockClock、SeededRandom、内存实现等）给 tests/ 下的集成测试
+testkit = []
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "time", "sync", "fs"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "migrate", "macros", "json"] }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+arc-swap = "1"
+moka = { version = "0.12", features = ["future"] }
+aes-gcm = "0.10"
+sha2 = "0.10"
+subtle = "2"
+secrecy = "0.10"
+tiktoken-rs = "0.6"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+metrics = "0.24"
+metrics-exporter-prometheus = "0.16"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_with = "3"
+uuid = { version = "1", features = ["v7", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+dashmap = "6"
+rand = "0.8"
+base64 = "0.22"
+thiserror = "2"
+async-trait = "0.1"
+tokio-util = "0.7"
+bytes = "1"
+futures = "0.3"
+
+[dev-dependencies]
+proptest = "1"
+wiremock = "0.6"
+testcontainers = "0.23"
+testcontainers-modules = { version = "0.11", features = ["postgres", "redis"] }
+rand_chacha = "0.3"
+tokio = { version = "1", features = ["test-util", "macros", "rt-multi-thread"] }
