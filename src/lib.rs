@@ -23,4 +23,28 @@ pub mod usage;
 pub mod testkit;
 
 /// 组装并启动网关（具体启动流程在后续任务中实现）。
-pub async fn run() {}
+pub async fn run() {
+    let config = match config::Config::from_env() {
+        Ok(c) => c,
+        Err(errors) => {
+            for e in &errors {
+                eprintln!("{e}");
+            }
+            std::process::exit(1);
+        }
+    };
+    logging::init();
+
+    let listener = match tokio::net::TcpListener::bind(config.listen_addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("GATEWAY_LISTEN_ADDR: failed to bind: {e}");
+            std::process::exit(1);
+        }
+    };
+    tracing::info!(addr = %config.listen_addr, "listening");
+    if let Err(e) = axum::serve(listener, http::build_router()).await {
+        tracing::error!(error = %e, "server error");
+        std::process::exit(1);
+    }
+}
