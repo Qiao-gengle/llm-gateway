@@ -102,7 +102,8 @@ pub fn build_router_full(
     let gen_ = Arc::new(request_id::RequestIdGenerator::new());
     let mut router = Router::new().merge(health::router());
     if let Some(registry) = models {
-        router = router.merge(models::router(registry));
+        router = router.merge(models::router(registry.clone()));
+        router = router.merge(ingress::router(registry));
     }
     if let Some(probes) = probes {
         router = router.merge(health::ready_router(probes));
