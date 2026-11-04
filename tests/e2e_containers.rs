@@ -407,3 +407,91 @@ async fn reload_failure_after_write_still_succeeds() {
 fn uid(s: &str) -> uuid::Uuid {
     uuid::Uuid::parse_str(s).unwrap()
 }
+
+// ---------------------------------------------------------------------------
+// 任务 3.6：Registry 刷新的容器集成测试
+// **Validates: Requirements 14.3, 14.4, 39.3**
+// ---------------------------------------------------------------------------
+
+/// 需求 14.3：Admin 写入成功后，同一 Registry 实例的下一次 `snapshot()` 可见新 Route，
+/// 且 `visible_models` 能看到新的 Public_Model。
+#[tokio::test]
+async fn registry_snapshot_after_admin_write_shows_new_route() {
+    let pg = docker_or_skip!();
+    let pool = connect_and_migrate(&pg.url).await.expect("migrate");
+    let (a, registry) = admin_with_registry(pool.clone(), pool.clone()).await;
+
+    assert!(registry.snapshot().visible_models(None).is_empty());
+
+    let pid = a.provider("reg-p1").await;
+    let (s, b, _) = a
+        .call(
+            "POST",
+            "/admin/routes",
+            Some(json!({"public_model": "reg-model-1", "targets": [target(&pid, "up-1")]})),
+        )
+        .await;
+    assert_eq!(s, 201, "{b}");
+
+    // Admin handler 已在响应返回前调用 reload；此处取的是同一实例的下一次快照。
+    let snap = registry.snapshot();
+    assert_eq!(snap.visible_models(None), vec!["reg-model-1"]);
+    assert_eq!(snap.routes_by_model["reg-model-1"].targets[0].upstream_model, "up-1");
+    assert_eq!(snap.routes_by_model["reg-model-1"].targets[0].provider_id, uid(&pid));
+}
+
+/// 需求 14.4：外部直接用 SQL 修改 `route_targets`（不经过 Admin_API）后，
+/// `poll_once()` 检测到指纹变化返回 `true` 并更新快照；指纹未变时返回 `false` 且快照不变。
+#[tokio::test]
+async fn registry_poll_once_detects_direct_sql_changes() {
+    let pg = docker_or_skip!();
+    let pool = connect_and_migrate(&pg.url).await.expect("migrate");
+    let secrets = Arc::new(SecretStore::new(&MASTER, Arc::new(OsRandom)));
+
+    let sealed = secrets.seal(UPSTREAM_KEY.as_bytes());
+    let provider_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO providers (name, protocol, base_url, api_key_nonce, api_key_ciphertext) \
+         VALUES ($1, 'openai', 'http://up.example/v1', $2, $3) RETURNING id",
+    )
+    .bind("sql-direct-provider")
+    .bind(sealed.nonce.to_vec())
+    .bind(sealed.ciphertext.clone())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let route_id: uuid::Uuid = sqlx::query_scalar("INSERT INTO routes (public_model) VALUES ($1) RETURNING id")
+        .bind("sql-direct-model")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    let registry = Registry::load_initial(Arc::new(PgRegistryStore::new(pool.clone())), secrets.clone())
+        .await
+        .expect("initial load");
+    // 还没有 Route_Target：模型不可见。
+    assert!(registry.snapshot().visible_models(None).is_empty());
+
+    // 轮询一次：没有变化，返回 false，快照保持原样。
+    assert!(!registry.poll_once().await.unwrap());
+
+    // 直接用 SQL 向 route_targets 插入一行，绕过 Admin_API。
+    sqlx::query(
+        "INSERT INTO route_targets (route_id, position, provider_id, upstream_model, priority, weight) \
+         VALUES ($1, 0, $2, 'sql-direct-upstream', 1, 10)",
+    )
+    .bind(route_id)
+    .bind(provider_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let changed = registry.poll_once().await.unwrap();
+    assert!(changed, "poll_once must detect the direct SQL change");
+    let snap = registry.snapshot();
+    assert_eq!(snap.visible_models(None), vec!["sql-direct-model"]);
+    assert_eq!(snap.routes_by_model["sql-direct-model"].targets[0].upstream_model, "sql-direct-upstream");
+
+    // 再轮询一次：指纹未变，返回 false，Arc 指向同一快照内容。
+    assert!(!registry.poll_once().await.unwrap());
+    assert_eq!(registry.snapshot().visible_models(None), vec!["sql-direct-model"]);
+}

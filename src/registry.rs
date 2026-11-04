@@ -429,3 +429,104 @@ impl Registry {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::clock::OsRandom;
+    use crate::secret::SecretStore;
+    use crate::testkit::InMemoryRegistryStore;
+
+    fn secret_store() -> SecretStore {
+        SecretStore::new(&[9; 32], Arc::new(OsRandom))
+    }
+
+    fn provider(secrets: &SecretStore, id: Uuid, name: &str, key: &str, updated_at: DateTime<Utc>) -> RawProvider {
+        let sealed = secrets.seal(key.as_bytes());
+        RawProvider {
+            id,
+            name: name.to_owned(),
+            protocol: "openai".to_owned(),
+            base_url: "https://api.example.com/v1".to_owned(),
+            api_key_nonce: sealed.nonce.to_vec(),
+            api_key_ciphertext: sealed.ciphertext,
+            connect_timeout_s: 5,
+            ttfb_timeout_s: 60,
+            total_timeout_s: 600,
+            enabled: true,
+            updated_at,
+        }
+    }
+
+    /// 需求 14.5：轮询/刷新失败时保留现有快照，不做任何部分替换。
+    #[tokio::test]
+    async fn reload_failure_keeps_old_snapshot() {
+        let secrets = Arc::new(secret_store());
+        let now = Utc::now();
+        let p = provider(&secrets, Uuid::new_v4(), "p1", "key-1", now);
+        let raw = RawData { providers: vec![p], routes: vec![], targets: vec![] };
+        let store = Arc::new(InMemoryRegistryStore::new(raw));
+        let registry = Registry::load_initial(store.clone(), secrets.clone()).await.unwrap();
+
+        let before = registry.snapshot();
+        assert_eq!(before.providers.len(), 1);
+
+        store.set_failing(true);
+        assert!(registry.reload().await.is_err());
+
+        let after = registry.snapshot();
+        // 同一个 Arc 指针：没有发生任何替换（即便是部分替换）。
+        assert!(Arc::ptr_eq(&before, &after));
+        assert_eq!(after.providers.len(), 1);
+
+        // 恢复后可以重新成功加载。
+        store.set_failing(false);
+        assert!(registry.reload().await.is_ok());
+    }
+
+    /// 需求 14.6：请求早先持有的 `Arc<Snapshot>` 在快照被替换之后保持不变；
+    /// 之后获取的快照反映最新数据。
+    #[tokio::test]
+    async fn held_snapshot_unaffected_by_later_replacement() {
+        let secrets = Arc::new(secret_store());
+        let now = Utc::now();
+        let p = provider(&secrets, Uuid::new_v4(), "p1", "key-1", now);
+        let raw = RawData { providers: vec![p], routes: vec![], targets: vec![] };
+        let store = Arc::new(InMemoryRegistryStore::new(raw));
+        let registry = Registry::load_initial(store.clone(), secrets.clone()).await.unwrap();
+
+        let held = registry.snapshot();
+        assert_eq!(held.providers.len(), 1);
+
+        let p2 = provider(&secrets, Uuid::new_v4(), "p2", "key-2", now + chrono::Duration::seconds(1));
+        store.mutate(|d| d.providers.push(p2));
+        registry.reload().await.unwrap();
+
+        // 先前持有的快照内容没有变化。
+        assert_eq!(held.providers.len(), 1);
+        // 新获取的快照已反映变更。
+        let latest = registry.snapshot();
+        assert_eq!(latest.providers.len(), 2);
+        assert!(!Arc::ptr_eq(&held, &latest));
+    }
+
+    /// 需求 13.5：单个 Provider 的 Upstream_Key 解密失败只影响该 Provider，
+    /// 其余 Provider 仍然可用。
+    #[tokio::test]
+    async fn single_provider_decrypt_failure_only_affects_that_provider() {
+        let secrets = secret_store();
+        let now = Utc::now();
+        let good = provider(&secrets, Uuid::new_v4(), "good", "key-good", now);
+        let mut bad = provider(&secrets, Uuid::new_v4(), "bad", "key-bad", now);
+        bad.api_key_ciphertext[0] ^= 0x80;
+
+        let raw = RawData { providers: vec![good.clone(), bad.clone()], routes: vec![], targets: vec![] };
+        let snapshot = build_snapshot(&raw, &secrets);
+
+        assert_eq!(snapshot.providers.len(), 2);
+        assert!(snapshot.providers[&good.id].api_key.is_some());
+        assert!(snapshot.providers[&good.id].is_available());
+        assert!(snapshot.providers[&bad.id].api_key.is_none());
+        assert!(!snapshot.providers[&bad.id].is_available());
+    }
+}
