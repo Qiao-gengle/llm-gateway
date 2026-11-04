@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 use crate::http::errors::AdminError;
+use crate::registry::Registry;
 use crate::secret::SecretStore;
 
 /// Admin_Token 的 SHA-256 摘要；构造时一次性读取明文，之后只保留摘要。
@@ -45,6 +46,19 @@ impl std::fmt::Debug for AdminToken {
 pub struct AdminDb {
     pub pool: sqlx::PgPool,
     pub secrets: Arc<SecretStore>,
+    /// 写入提交后用于刷新快照；为 `None` 时不刷新（仅测试使用）。
+    pub registry: Option<Arc<Registry>>,
+}
+
+impl AdminDb {
+    /// 事务提交成功后调用；刷新失败只记 warn，不影响响应（需求 14.3、14.7）。
+    pub async fn refresh_registry(&self) {
+        if let Some(registry) = &self.registry {
+            if let Err(e) = registry.reload().await {
+                tracing::warn!(error = %e, "registry reload after admin write failed; keeping previous snapshot");
+            }
+        }
+    }
 }
 
 impl std::fmt::Debug for AdminDb {
@@ -66,7 +80,15 @@ impl AdminState {
     }
 
     pub fn with_db(mut self, pool: sqlx::PgPool, secrets: Arc<SecretStore>) -> Self {
-        self.db = Some(AdminDb { pool, secrets });
+        self.db = Some(AdminDb { pool, secrets, registry: None });
+        self
+    }
+
+    /// 设置写入后需要刷新的 Registry；须在 `with_db` 之后调用。
+    pub fn with_registry(mut self, registry: Arc<Registry>) -> Self {
+        if let Some(db) = self.db.as_mut() {
+            db.registry = Some(registry);
+        }
         self
     }
 }

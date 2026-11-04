@@ -189,6 +189,7 @@ async fn create(State(db): State<AdminDb>, body: Bytes) -> Result<Response, Admi
     check_providers(&mut tx, &targets).await?;
     let r = routes::insert(&mut tx, &public_model, &targets).await.map_err(db_err)?;
     commit(tx).await?;
+    db.refresh_registry().await;
     Ok((StatusCode::CREATED, Json(view(&r))).into_response())
 }
 
@@ -224,6 +225,7 @@ async fn patch(
     let public_model = f.public_model.unwrap_or(cur.route.public_model);
     let r = routes::update(&mut tx, id, &public_model, f.targets.as_deref()).await.map_err(db_err)?;
     commit(tx).await?;
+    db.refresh_registry().await;
     Ok(Json(view(&r)))
 }
 
@@ -234,6 +236,7 @@ async fn remove(State(db): State<AdminDb>, Path(id): Path<String>) -> Result<Sta
         return Err(not_found());
     }
     commit(tx).await?;
+    db.refresh_registry().await;
     Ok(StatusCode::NO_CONTENT)
 }
 
