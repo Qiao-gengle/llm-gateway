@@ -47,6 +47,23 @@ pub async fn run() {
         }
     };
 
+    let secrets = std::sync::Arc::new(secret::SecretStore::new(
+        config.master_key.expose_secret(),
+        std::sync::Arc::new(clock::OsRandom),
+    ));
+    let registry = match registry::Registry::load_initial(
+        std::sync::Arc::new(registry::PgRegistryStore::new(pg.clone())),
+        secrets.clone(),
+    )
+    .await
+    {
+        Ok(r) => std::sync::Arc::new(r),
+        Err(e) => {
+            eprintln!("registry: initial load failed: {e}");
+            std::process::exit(1);
+        }
+    };
+
     let listener = match tokio::net::TcpListener::bind(config.listen_addr).await {
         Ok(l) => l,
         Err(e) => {
@@ -55,13 +72,12 @@ pub async fn run() {
         }
     };
     tracing::info!(addr = %config.listen_addr, "listening");
-    let secrets = std::sync::Arc::new(secret::SecretStore::new(
-        config.master_key.expose_secret(),
-        std::sync::Arc::new(clock::OsRandom),
-    ));
-    let admin = http::admin::AdminState::new(&config.admin_token).with_db(pg.clone(), secrets);
+    // 关闭信号在优雅关闭任务中接入；此前令牌不会被取消。
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let _registry_poller = registry.clone().spawn_poller(config.registry_poll, shutdown.clone());
+    let admin = http::admin::AdminState::new(&config.admin_token).with_db(pg.clone(), secrets).with_registry(registry.clone());
     let probes = vec![http::health::Probe::postgres(pg)];
-    let app = http::build_router_with_admin(Some(admin), Some(probes));
+    let app = http::build_router_full(Some(admin), Some(probes), Some(registry.clone()));
     if let Err(e) = axum::serve(listener, app).await {
         tracing::error!(error = %e, "server error");
         std::process::exit(1);

@@ -195,6 +195,7 @@ async fn create(State(db): State<AdminDb>, body: Bytes) -> Result<Response, Admi
     let mut tx = begin(&db).await?;
     let row = providers::insert(&mut tx, &new).await.map_err(db_err)?;
     commit(tx).await?;
+    db.refresh_registry().await;
     Ok((StatusCode::CREATED, Json(view(&row))).into_response())
 }
 
@@ -232,6 +233,7 @@ async fn patch(
     check_timeouts(upd.connect_timeout_s, upd.ttfb_timeout_s, upd.total_timeout_s)?;
     let row = providers::update(&mut tx, id, &upd).await.map_err(db_err)?;
     commit(tx).await?;
+    db.refresh_registry().await;
     Ok(Json(view(&row)))
 }
 
@@ -242,6 +244,7 @@ async fn remove(State(db): State<AdminDb>, Path(id): Path<String>) -> Result<Sta
         return Err(not_found());
     }
     commit(tx).await?;
+    db.refresh_registry().await;
     Ok(StatusCode::NO_CONTENT)
 }
 

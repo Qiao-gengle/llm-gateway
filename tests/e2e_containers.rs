@@ -12,6 +12,7 @@ use std::sync::Arc;
 use llm_gateway::clock::OsRandom;
 use llm_gateway::db::connect_and_migrate;
 use llm_gateway::http::admin::{AdminState, admin_router};
+use llm_gateway::registry::{PgRegistryStore, Registry};
 use llm_gateway::secret::{Sealed, SecretStore};
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Value, json};
@@ -338,6 +339,69 @@ async fn route_crud_404_409_and_target_replacement() {
     assert_eq!(n, 0);
     let (s, _, _) = a.call("GET", &format!("/admin/routes/{rid}"), None).await;
     assert_eq!(s, 404);
+}
+
+async fn admin_with_registry(pool: PgPool, reg_pool: PgPool) -> (Admin, Arc<Registry>) {
+    let secrets = Arc::new(SecretStore::new(&MASTER, Arc::new(OsRandom)));
+    let registry = Arc::new(
+        Registry::load_initial(Arc::new(PgRegistryStore::new(reg_pool)), secrets.clone()).await.expect("initial load"),
+    );
+    let state = AdminState::new(&SecretString::from("tok")).with_db(pool.clone(), secrets).with_registry(registry.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = admin_router(state);
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (Admin { base: format!("http://{addr}"), pool, http: reqwest::Client::new() }, registry)
+}
+
+/// 需求 14.3：Admin 写入成功后，响应返回前快照已包含该变更。
+#[tokio::test]
+async fn admin_writes_refresh_registry_snapshot() {
+    let pg = docker_or_skip!();
+    let pool = connect_and_migrate(&pg.url).await.expect("migrate");
+    let (a, registry) = admin_with_registry(pool.clone(), pool.clone()).await;
+    assert!(registry.snapshot().providers.is_empty());
+
+    let pid = a.provider("p1").await;
+    assert!(registry.snapshot().providers.contains_key(&uid(&pid)));
+
+    let (s, b, _) = a
+        .call("POST", "/admin/routes", Some(json!({"public_model": "m1", "targets": [target(&pid, "u1")]})))
+        .await;
+    assert_eq!(s, 201, "{b}");
+    let rid = b["id"].as_str().unwrap().to_string();
+    assert_eq!(registry.snapshot().routes_by_model["m1"].targets[0].upstream_model, "u1");
+
+    let (s, _, _) = a.call("PATCH", &format!("/admin/routes/{rid}"), Some(json!({"public_model": "m2"}))).await;
+    assert_eq!(s, 200);
+    let snap = registry.snapshot();
+    assert!(snap.routes_by_model.contains_key("m2") && !snap.routes_by_model.contains_key("m1"));
+
+    let (s, _, _) = a.call("PATCH", &format!("/admin/providers/{pid}"), Some(json!({"enabled": false}))).await;
+    assert_eq!(s, 200);
+    assert!(!registry.snapshot().providers[&uid(&pid)].enabled);
+
+    let (s, _, _) = a.call("DELETE", &format!("/admin/routes/{rid}"), None).await;
+    assert_eq!(s, 204);
+    assert!(registry.snapshot().routes_by_model.is_empty());
+    let (s, _, _) = a.call("DELETE", &format!("/admin/providers/{pid}"), None).await;
+    assert_eq!(s, 204);
+    assert!(registry.snapshot().providers.is_empty());
+}
+
+/// 需求 14.7：刷新失败时响应仍为成功，旧快照保留。
+#[tokio::test]
+async fn reload_failure_after_write_still_succeeds() {
+    let pg = docker_or_skip!();
+    let pool = connect_and_migrate(&pg.url).await.expect("migrate");
+    let reg_pool = connect_and_migrate(&pg.url).await.expect("migrate");
+    let (a, registry) = admin_with_registry(pool, reg_pool.clone()).await;
+    reg_pool.close().await;
+
+    let pid = a.provider("p-reload-fails").await;
+    assert!(registry.snapshot().providers.is_empty(), "old snapshot kept");
+    let (s, _, _) = a.call("DELETE", &format!("/admin/providers/{pid}"), None).await;
+    assert_eq!(s, 204);
 }
 
 fn uid(s: &str) -> uuid::Uuid {
