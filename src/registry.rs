@@ -386,6 +386,28 @@ impl Registry {
         self.current.load_full()
     }
 
+    /// 测试用：以给定快照构造 Registry，store 为空数据。
+    #[cfg(test)]
+    pub(crate) fn with_snapshot_for_test(snapshot: Snapshot) -> Registry {
+        struct EmptyStore;
+        #[async_trait]
+        impl RegistryStore for EmptyStore {
+            async fn load_all(&self) -> Result<RawData, RegistryError> {
+                Ok(RawData::default())
+            }
+            async fn fingerprint(&self) -> Result<Fingerprint, RegistryError> {
+                Ok(Fingerprint::default())
+            }
+        }
+        let secrets = SecretStore::new(&[0u8; 32], Arc::new(crate::clock::OsRandom));
+        Registry {
+            current: ArcSwap::from_pointee(snapshot),
+            store: Arc::new(EmptyStore),
+            secrets: Arc::new(secrets),
+            reload_lock: tokio::sync::Mutex::new(()),
+        }
+    }
+
     /// 全量加载并替换快照；失败时保留旧快照。
     pub async fn reload(&self) -> Result<(), RegistryError> {
         let _guard = self.reload_lock.lock().await;
