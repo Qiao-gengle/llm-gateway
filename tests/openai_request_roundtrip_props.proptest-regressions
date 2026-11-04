@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc de5f7aacf21b41951098c809ec22e9e6b97b48b8ce7639612f366e3a9467c1c8 # shrinks to request = Object {"model": String("a"), "messages": Array [Object {"role": String("system"), "content": String("")}], "stream": Bool(false)}
+cc 5c78c963726b84376529599f6519963d84173e5b0188347d6898790ec67a7fd4 # shrinks to request = Object {"model": String("a"), "messages": Array [Object {"role": String("user"), "content": Array [Object {"type": String("text"), "text": String("")}]}], "stream": Bool(false)}
