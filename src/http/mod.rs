@@ -90,8 +90,20 @@ pub fn build_router_with_admin(
     admin: Option<admin::AdminState>,
     probes: Option<Vec<health::Probe>>,
 ) -> Router {
+    build_router_full(admin, probes, None)
+}
+
+/// 同 `build_router_with_admin`，提供 Registry 时挂入 `GET /v1/models`。
+pub fn build_router_full(
+    admin: Option<admin::AdminState>,
+    probes: Option<Vec<health::Probe>>,
+    models: Option<Arc<crate::registry::Registry>>,
+) -> Router {
     let gen_ = Arc::new(request_id::RequestIdGenerator::new());
     let mut router = Router::new().merge(health::router());
+    if let Some(registry) = models {
+        router = router.merge(models::router(registry));
+    }
     if let Some(probes) = probes {
         router = router.merge(health::ready_router(probes));
     }
